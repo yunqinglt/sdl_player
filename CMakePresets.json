@@ -1,0 +1,40 @@
+{
+    "version": 8,
+    "configurePresets": [
+        {
+            "name": "vs2019",
+            "displayName": "Visual Studio Community 2019 Release - amd64",
+            "description": "将编译器用于 Visual Studio 16 2019 (x64 体系结构)",
+            "generator": "Visual Studio 16 2019",
+            "toolset": "host=x64",
+            "architecture": "x64",
+            "binaryDir": "${sourceDir}/out/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+                "CMAKE_C_COMPILER": "D:/Microsoft Visual Studio/2019/Community/VC/Tools/MSVC/14.29.30133/bin/Hostx64/x64/cl.exe",
+                "CMAKE_CXX_COMPILER": "D:/Microsoft Visual Studio/2019/Community/VC/Tools/MSVC/14.29.30133/bin/Hostx64/x64/cl.exe"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "vs2019-debug",
+            "displayName": "Visual Studio Community 2019 Release - amd64 - Debug",
+            "configurePreset": "vs2019",
+            "configuration": "Debug"
+        }
+    ],
+    "workflowPresets": [
+        {
+            "name": "run",
+            "description": "",
+            "displayName": "",
+            "steps": [
+                {
+                    "type": "configure",
+                    "name": "vs2019"
+                }
+            ]
+        }
+    ]
+}
