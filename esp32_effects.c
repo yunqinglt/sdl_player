@@ -11,7 +11,7 @@
  *   - Uses pixel_t (uint16_t for RGB565, uint32_t for RGB888) instead of
  *     raw rgb_buf[] and LCD_ calls.
  *   - Replaced LCD_W/LCD_H with SCREEN_WIDTH/SCREEN_HEIGHT.
- *   - Replaced hardware timer (esp_timer_get_time) with SDL_GetTicks().
+ *   - Receives an application tick; it has no hardware or SDL timer dependency.
  *   - Replaced LCD_ShowPictureFast(0,0,LCD_W,LCD_H,rgb_buf) with
  *     Display_draw(disp, block, 0, 0, SCREEN_WIDTH-1, SCREEN_HEIGHT-1).
  *   - Removed draw_fps() — the main.c FPS system handles that.
