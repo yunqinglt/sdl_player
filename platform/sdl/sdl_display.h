@@ -16,8 +16,13 @@ typedef enum {
 } SdlDisplayEvent;
 
 SdlDisplay *sdl_display_create(const char *title, int width, int height);
+SdlDisplay *sdl_display_create_with_framebuffer(const char *title,
+                                                 pixel_t *pixels,
+                                                 int width, int height,
+                                                 int stride);
 void sdl_display_destroy(SdlDisplay *display);
 UiSurface *sdl_display_surface(SdlDisplay *display);
+void sdl_display_mark_dirty(SdlDisplay *display, UiRect rect);
 bool sdl_display_present(SdlDisplay *display);
 SdlDisplayEvent sdl_display_poll_event(SdlDisplay *display);
 uint32_t sdl_display_ticks(void);

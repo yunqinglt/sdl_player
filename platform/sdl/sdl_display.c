@@ -33,7 +33,8 @@ static void destroy_members(SdlDisplay *display)
     if (display->owns_sdl) SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_TIMER);
 }
 
-SdlDisplay *sdl_display_create(const char *title, int width, int height)
+static SdlDisplay *create_display(const char *title, int width, int height,
+                                  pixel_t *pixels, int stride)
 {
     SdlDisplay *display;
     const Uint32 required = SDL_INIT_VIDEO | SDL_INIT_TIMER;
@@ -52,7 +53,14 @@ SdlDisplay *sdl_display_create(const char *title, int width, int height)
         display->owns_sdl = true;
     }
 
-    if (!ui_surface_create(&display->surface, width, height)) {
+    if (pixels != NULL) {
+        if (!ui_surface_wrap(&display->surface, pixels, width, height, stride)) {
+            LOG_ERROR("Invalid external %dx%d framebuffer\n", width, height);
+            destroy_members(display);
+            free(display);
+            return NULL;
+        }
+    } else if (!ui_surface_create(&display->surface, width, height)) {
         LOG_ERROR("Could not allocate the %dx%d framebuffer\n", width, height);
         destroy_members(display);
         free(display);
@@ -103,6 +111,19 @@ SdlDisplay *sdl_display_create(const char *title, int width, int height)
     return display;
 }
 
+SdlDisplay *sdl_display_create(const char *title, int width, int height)
+{
+    return create_display(title, width, height, NULL, width);
+}
+
+SdlDisplay *sdl_display_create_with_framebuffer(const char *title,
+                                                 pixel_t *pixels,
+                                                 int width, int height,
+                                                 int stride)
+{
+    return create_display(title, width, height, pixels, stride);
+}
+
 void sdl_display_destroy(SdlDisplay *display)
 {
     if (display == NULL) return;
@@ -113,6 +134,11 @@ void sdl_display_destroy(SdlDisplay *display)
 UiSurface *sdl_display_surface(SdlDisplay *display)
 {
     return display != NULL ? &display->surface : NULL;
+}
+
+void sdl_display_mark_dirty(SdlDisplay *display, UiRect rect)
+{
+    if (display != NULL) ui_surface_mark_dirty(&display->surface, rect);
 }
 
 bool sdl_display_present(SdlDisplay *display)
