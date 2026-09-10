@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 static int min_int(int a, int b) { return a < b ? a : b; }
 static int max_int(int a, int b) { return a > b ? a : b; }
@@ -139,12 +140,15 @@ static bool controls_are_near(UiRect a, UiRect b, int threshold)
              b.y + b.h + threshold <= a.y);
 }
 
-bool ui_build_render_tree(UiBuffer *root, const UiControl *controls,
-                          size_t count, int threshold)
+bool ui_build_render_tree_debug(UiBuffer *root, const UiControl *controls,
+                                size_t count, int threshold,
+                                const UiRenderTreeDebugOptions *debug)
 {
     size_t *parents = NULL;
     size_t *group_sizes = NULL;
     UiRect *group_bounds = NULL;
+    UiRect *clipped_bounds = NULL;
+    size_t group_count = 0;
     bool success = false;
     const UiRect root_bounds = {0, 0,
                                 root != NULL ? root->width : 0,
@@ -154,9 +158,13 @@ bool ui_build_render_tree(UiBuffer *root, const UiControl *controls,
     if (threshold < 0) threshold = 0;
 
     parents = malloc(count * sizeof(*parents));
-    group_sizes = calloc(count, sizeof(*group_sizes));
+    group_sizes = malloc(count * sizeof(*group_sizes));
     group_bounds = calloc(count, sizeof(*group_bounds));
-    if (parents == NULL || group_sizes == NULL || group_bounds == NULL) goto done;
+    clipped_bounds = malloc(count * sizeof(*clipped_bounds));
+    if (parents == NULL || group_sizes == NULL || group_bounds == NULL ||
+        clipped_bounds == NULL) {
+        goto done;
+    }
 
     for (size_t i = 0; i < count; ++i) parents[i] = i;
     for (size_t i = 0; i < count; ++i) {
@@ -170,15 +178,46 @@ bool ui_build_render_tree(UiBuffer *root, const UiControl *controls,
         }
     }
 
+    /*
+     * Keep the raw proximity components, but expose only controls which
+     * actually render. A component's stable ID is its smallest visible source
+     * index; clipped controls have no group even when they are near a visible
+     * member.
+     */
     for (size_t i = 0; i < count; ++i) {
-        size_t group = set_find(parents, i);
-        UiRect clipped = ui_rect_intersection(controls[i].bounds, root_bounds);
-        parents[i] = group;
-        if (ui_rect_is_empty(clipped)) continue;
+        parents[i] = set_find(parents, i);
+        clipped_bounds[i] =
+            ui_rect_intersection(controls[i].bounds, root_bounds);
+    }
+    for (size_t i = 0; i < count; ++i) {
+        group_sizes[i] = UI_RENDER_TREE_NO_GROUP;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        size_t root_id;
+
+        if (ui_rect_is_empty(clipped_bounds[i])) continue;
+        root_id = parents[i];
+        if (i < group_sizes[root_id]) group_sizes[root_id] = i;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        parents[i] = ui_rect_is_empty(clipped_bounds[i])
+            ? UI_RENDER_TREE_NO_GROUP
+            : group_sizes[parents[i]];
+    }
+    memset(group_sizes, 0, count * sizeof(*group_sizes));
+
+    for (size_t i = 0; i < count; ++i) {
+        size_t group = parents[i];
+
+        if (group == UI_RENDER_TREE_NO_GROUP) continue;
         group_bounds[group] = group_sizes[group] == 0
-            ? clipped
-            : ui_rect_union(group_bounds[group], clipped);
+            ? clipped_bounds[i]
+            : ui_rect_union(group_bounds[group], clipped_bounds[i]);
         ++group_sizes[group];
+    }
+
+    for (size_t group = 0; group < count; ++group) {
+        if (group_sizes[group] != 0) ++group_count;
     }
 
     for (size_t group = 0; group < count; ++group) {
@@ -189,17 +228,16 @@ bool ui_build_render_tree(UiBuffer *root, const UiControl *controls,
         if (group_sizes[group] > 1) {
             container = ui_buffer_create(root, bounds);
             if (container == NULL) goto done;
+            container->is_group_container = true;
         }
 
         for (size_t i = 0; i < count; ++i) {
             UiBuffer *child;
-            UiRect clipped;
             UiRect relative;
 
             if (parents[i] != group) continue;
-            clipped = ui_rect_intersection(controls[i].bounds, root_bounds);
-            if (ui_rect_is_empty(clipped)) continue;
-            relative = clipped;
+            if (ui_rect_is_empty(clipped_bounds[i])) continue;
+            relative = clipped_bounds[i];
             if (container != root) {
                 relative.x -= bounds.x;
                 relative.y -= bounds.y;
@@ -213,12 +251,32 @@ bool ui_build_render_tree(UiBuffer *root, const UiControl *controls,
     }
 
     success = true;
+    if (debug != NULL && debug->callback != NULL) {
+        const UiRenderTreeDebugSnapshot snapshot = {
+            root_bounds,
+            clipped_bounds,
+            parents,
+            group_bounds,
+            group_sizes,
+            count,
+            group_count,
+            threshold
+        };
+        debug->callback(&snapshot, debug->context);
+    }
 
 done:
+    free(clipped_bounds);
     free(group_bounds);
     free(group_sizes);
     free(parents);
     return success;
+}
+
+bool ui_build_render_tree(UiBuffer *root, const UiControl *controls,
+                          size_t count, int threshold)
+{
+    return ui_build_render_tree_debug(root, controls, count, threshold, NULL);
 }
 
 void ui_draw_debug_border(UiBuffer *buffer, void *context)
@@ -236,6 +294,31 @@ void ui_draw_debug_border(UiBuffer *buffer, void *context)
         buffer->pixels[(size_t)y * (size_t)buffer->stride +
                        (size_t)(buffer->width - 1)] = color;
     }
+}
+
+static void draw_group_debug_bounds(UiBuffer *buffer, pixel_t color)
+{
+    UiBuffer *child;
+
+    if (buffer == NULL) return;
+    for (child = buffer->first_child;
+         child != NULL;
+         child = child->next_sibling) {
+        draw_group_debug_bounds(child, color);
+    }
+
+    if (!buffer->is_group_container || buffer->parent == NULL ||
+        buffer->first_child == NULL ||
+        buffer->first_child->next_sibling == NULL) {
+        return;
+    }
+    ui_draw_debug_border(buffer, &color);
+    ui_surface_mark_dirty(buffer->surface, absolute_bounds(buffer));
+}
+
+void ui_buffer_draw_group_debug_bounds(UiBuffer *root, pixel_t color)
+{
+    draw_group_debug_bounds(root, color);
 }
 
 void ui_draw_debug_group(UiBuffer *buffer, void *context)

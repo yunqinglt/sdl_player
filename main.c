@@ -12,14 +12,18 @@
 typedef struct {
     uint64_t frame_limit;
     unsigned initial_phase;
+    bool ui_tree_debug;
 } Options;
 
 static void print_usage(const char *program)
 {
-    printf("Usage: %s [--frames N] [--phase 0-%d]\n", program,
+    printf("Usage: %s [--frames N] [--phase 0-%d] [--ui-tree-debug]\n",
+           program,
            DEMO_PHASE_COUNT - 1);
     printf("  SPACE: next demo    ESC: quit\n");
     printf("  --frames is useful for automated/headless smoke tests.\n");
+    printf("  --ui-tree-debug outlines proximity groups and reports topology "
+           "changes (phase 3 only).\n");
 }
 
 static bool parse_unsigned(const char *text, uint64_t *value)
@@ -44,6 +48,10 @@ static int parse_options(int argc, char **argv, Options *options)
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
             return 1;
+        }
+        if (strcmp(argv[i], "--ui-tree-debug") == 0) {
+            options->ui_tree_debug = true;
+            continue;
         }
         if ((strcmp(argv[i], "--frames") == 0 ||
              strcmp(argv[i], "--phase") == 0) && i + 1 < argc) {
@@ -94,6 +102,7 @@ int main(int argc, char **argv)
         sdl_display_destroy(display);
         return EXIT_FAILURE;
     }
+    demo_set_ui_tree_debug(&demo, options.ui_tree_debug);
     demo_set_phase(&demo, options.initial_phase);
     LOG_INFO("Demo %u: %s\n", demo.phase, demo_phase_name(&demo));
     fps_started = sdl_display_ticks();

@@ -1,9 +1,13 @@
 #include "demo.h"
 
 #include "esp32_effects.h"
+#include "player_conf.h"
 #include "ui/ui_drawer.h"
 
 #include <stddef.h>
+#include <stdio.h>
+
+#define DEMO_UI_GROUPING_THRESHOLD 40
 
 typedef struct {
     int x;
@@ -130,6 +134,92 @@ static void render_partial_bounce(Demo *demo)
                       PIXEL_RGB(30, 70, 180));
 }
 
+static uint64_t ui_tree_topology_hash(
+    const UiRenderTreeDebugSnapshot *snapshot)
+{
+    static const uint64_t offset_basis = UINT64_C(14695981039346656037);
+    static const uint64_t prime = UINT64_C(1099511628211);
+    uint64_t hash = offset_basis;
+
+    hash ^= (uint64_t)snapshot->control_count;
+    hash *= prime;
+    for (size_t i = 0; i < snapshot->control_count; ++i) {
+        hash ^= (uint64_t)snapshot->control_groups[i] + UINT64_C(1);
+        hash *= prime;
+    }
+    return hash;
+}
+
+static void ui_tree_format_members(char *text, size_t capacity,
+                                   const UiRenderTreeDebugSnapshot *snapshot,
+                                   size_t group)
+{
+    size_t used = 0;
+
+    if (capacity == 0) return;
+    text[0] = '\0';
+    for (size_t i = 0; i < snapshot->control_count; ++i) {
+        int written;
+
+        if (snapshot->control_groups[i] != group || used >= capacity) continue;
+        written = snprintf(text + used, capacity - used, "%s%llu",
+                           used == 0 ? "" : ",",
+                           (unsigned long long)i);
+        if (written < 0) {
+            text[0] = '\0';
+            return;
+        }
+        if ((size_t)written >= capacity - used) {
+            used = capacity;
+        } else {
+            used += (size_t)written;
+        }
+    }
+}
+
+static void report_ui_tree_snapshot(const UiRenderTreeDebugSnapshot *snapshot,
+                                    void *context)
+{
+    Demo *demo = context;
+    const uint64_t topology_hash = ui_tree_topology_hash(snapshot);
+    const char *event;
+
+    if (!demo->ui_tree_debug_has_topology) {
+        event = "snapshot";
+    } else if (topology_hash == demo->ui_tree_debug_topology_hash) {
+        return;
+    } else if (snapshot->group_count < demo->ui_tree_debug_group_count) {
+        event = "join";
+    } else if (snapshot->group_count > demo->ui_tree_debug_group_count) {
+        event = "split";
+    } else {
+        event = "regroup";
+    }
+
+    demo->ui_tree_debug_has_topology = true;
+    demo->ui_tree_debug_topology_hash = topology_hash;
+    demo->ui_tree_debug_group_count = snapshot->group_count;
+
+    LOG_INFO("UI-TREE tick=%lu event=%s groups=%llu threshold=%d\n",
+             (unsigned long)demo->tick, event,
+             (unsigned long long)snapshot->group_count,
+             snapshot->grouping_threshold);
+    (void)event;
+    for (size_t group = 0; group < snapshot->control_count; ++group) {
+        char members[64];
+        const UiRect bounds = snapshot->group_bounds[group];
+
+        if (snapshot->group_sizes[group] == 0) continue;
+        ui_tree_format_members(members, sizeof(members), snapshot, group);
+        LOG_INFO("UI-TREE group=%llu kind=%s members=[%s] "
+                 "bounds=(%d,%d %dx%d)\n",
+                 (unsigned long long)group,
+                 snapshot->group_sizes[group] > 1 ? "proximity" : "isolated",
+                 members, bounds.x, bounds.y, bounds.w, bounds.h);
+        (void)bounds;
+    }
+}
+
 static bool render_ui_tree(Demo *demo)
 {
     UiSurface *surface = demo->surface;
@@ -157,12 +247,28 @@ static bool render_ui_tree(Demo *demo)
 
     root = ui_buffer_root(surface);
     if (root == NULL) return false;
-    if (!ui_build_render_tree(root, controls,
-                              sizeof(controls) / sizeof(controls[0]), 40)) {
+    if (demo->ui_tree_debug) {
+        const UiRenderTreeDebugOptions debug_options = {
+            report_ui_tree_snapshot,
+            demo
+        };
+
+        if (!ui_build_render_tree_debug(
+                root, controls, sizeof(controls) / sizeof(controls[0]),
+                DEMO_UI_GROUPING_THRESHOLD, &debug_options)) {
+            ui_buffer_destroy_tree(root);
+            return false;
+        }
+    } else if (!ui_build_render_tree(
+                   root, controls, sizeof(controls) / sizeof(controls[0]),
+                   DEMO_UI_GROUPING_THRESHOLD)) {
         ui_buffer_destroy_tree(root);
         return false;
     }
     ui_buffer_render(root);
+    if (demo->ui_tree_debug) {
+        ui_buffer_draw_group_debug_bounds(root, COLOR_RED);
+    }
     ui_buffer_destroy_tree(root);
     return true;
 }
@@ -179,6 +285,13 @@ bool demo_init(Demo *demo, UiSurface *surface)
     return true;
 }
 
+void demo_set_ui_tree_debug(Demo *demo, bool enabled)
+{
+    if (demo == NULL) return;
+    demo->ui_tree_debug = enabled;
+    demo->ui_tree_debug_has_topology = false;
+}
+
 void demo_set_phase(Demo *demo, unsigned phase)
 {
     if (demo == NULL) return;
@@ -188,6 +301,7 @@ void demo_set_phase(Demo *demo, unsigned phase)
     demo->rect_y = 0;
     demo->rect_dx = 3;
     demo->rect_dy = 2;
+    demo->ui_tree_debug_has_topology = false;
     if (demo->phase >= 4) {
         Effects_enter((EffectMode)(demo->phase - 4));
     }

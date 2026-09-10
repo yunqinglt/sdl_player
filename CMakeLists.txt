@@ -122,6 +122,51 @@ if(SDL_PLAYER_BUILD_TESTS)
     target_compile_features(ui-core-tests PRIVATE c_std_11)
     sdl_player_enable_warnings(ui-core-tests)
     add_test(NAME ui-core-tests COMMAND ui-core-tests)
+
+    add_test(NAME sdl-player-help COMMAND sdl-player --help)
+    set_tests_properties(sdl-player-help PROPERTIES
+        PASS_REGULAR_EXPRESSION "ui-tree-debug"
+    )
+
+    function(sdl_player_add_headless_test name)
+        add_test(NAME ${name} COMMAND sdl-player ${ARGN})
+        set_tests_properties(${name} PROPERTIES
+            ENVIRONMENT "SDL_VIDEODRIVER=dummy"
+            TIMEOUT 10
+        )
+    endfunction()
+
+    sdl_player_add_headless_test(
+        sdl-player-ui-tree-snapshot
+        --phase 3 --frames 1 --ui-tree-debug
+    )
+    set_tests_properties(sdl-player-ui-tree-snapshot PROPERTIES
+        PASS_REGULAR_EXPRESSION "UI-TREE.*event=snapshot"
+    )
+
+    sdl_player_add_headless_test(
+        sdl-player-ui-tree-join
+        --phase 3 --frames 10 --ui-tree-debug
+    )
+    set_tests_properties(sdl-player-ui-tree-join PROPERTIES
+        PASS_REGULAR_EXPRESSION "UI-TREE.*event=join"
+    )
+
+    sdl_player_add_headless_test(
+        sdl-player-ui-tree-split
+        --phase 3 --frames 10 --ui-tree-debug
+    )
+    set_tests_properties(sdl-player-ui-tree-split PROPERTIES
+        PASS_REGULAR_EXPRESSION "UI-TREE.*event=split"
+    )
+
+    sdl_player_add_headless_test(
+        sdl-player-ui-tree-debug-disabled
+        --phase 3 --frames 1
+    )
+    set_tests_properties(sdl-player-ui-tree-debug-disabled PROPERTIES
+        FAIL_REGULAR_EXPRESSION "UI-TREE"
+    )
 endif()
 
 message(STATUS "sdl-player ${PROJECT_VERSION}")
