@@ -12,7 +12,11 @@ struct SdlDisplay {
     SDL_Renderer *renderer;
     SDL_Texture *texture;
     UiSurface surface;
-    bool owns_sdl;
+    /* Only these subsystem bits were started by this display.  SDL may have
+     * been initialized by Qt, another display, or an embedding application;
+     * unconditionally calling SDL_QuitSubSystem on Windows would tear down
+     * those owners' state. */
+    Uint32 owned_subsystems;
 };
 
 static Uint32 texture_format(void)
@@ -30,7 +34,8 @@ static void destroy_members(SdlDisplay *display)
     if (display->renderer != NULL) SDL_DestroyRenderer(display->renderer);
     if (display->window != NULL) SDL_DestroyWindow(display->window);
     ui_surface_destroy(&display->surface);
-    if (display->owns_sdl) SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_TIMER);
+    if (display->owned_subsystems != 0)
+        SDL_QuitSubSystem(display->owned_subsystems);
 }
 
 static SdlDisplay *create_display(const char *title, int width, int height,
@@ -44,13 +49,20 @@ static SdlDisplay *create_display(const char *title, int width, int height,
     display = calloc(1, sizeof(*display));
     if (display == NULL) return NULL;
 
-    if ((SDL_WasInit(required) & required) != required) {
-        if (SDL_InitSubSystem(required) < 0) {
-            LOG_ERROR("SDL initialization failed: %s\n", SDL_GetError());
-            free(display);
-            return NULL;
+    {
+        const Uint32 initialized = SDL_WasInit(0);
+        const Uint32 missing = required & ~initialized;
+        if (missing != 0) {
+            if (SDL_InitSubSystem(missing) < 0) {
+                /* SDL can initialize a subset before reporting an error.
+                 * Release only bits this instance attempted to start. */
+                SDL_QuitSubSystem(missing & SDL_WasInit(0));
+                LOG_ERROR("SDL initialization failed: %s\n", SDL_GetError());
+                free(display);
+                return NULL;
+            }
+            display->owned_subsystems = missing;
         }
-        display->owns_sdl = true;
     }
 
     if (pixels != NULL) {
