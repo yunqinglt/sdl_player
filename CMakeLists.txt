@@ -4,13 +4,71 @@ project(sdl-player VERSION 0.2.0 LANGUAGES C)
 
 option(SDL_PLAYER_FETCH_SDL2
        "Download and build SDL2 when no system package can be found" ON)
-option(SDL_PLAYER_BUILD_TESTS "Build platform-independent UI tests" ON)
+option(SDL_PLAYER_BUILD_TESTS "Build UI and sdl-player tests" ON)
+set(SDL_PLAYER_TREELIKE_UI_SOURCE_DIR "" CACHE PATH
+    "Use a local treelike_ui checkout instead of fetching it")
+set(SDL_PLAYER_TREELIKE_UI_GIT_TAG
+    "72e3060d292922e98ed4a3a9d023786801a9d38f" CACHE STRING
+    "treelike_ui commit used by FetchContent")
 set(SDL_PLAYER_PIXEL_FORMAT "RGB565" CACHE STRING "Framebuffer format: RGB565 or RGB888")
 set_property(CACHE SDL_PLAYER_PIXEL_FORMAT PROPERTY STRINGS RGB565 RGB888)
 
 if(NOT SDL_PLAYER_PIXEL_FORMAT STREQUAL "RGB565" AND
    NOT SDL_PLAYER_PIXEL_FORMAT STREQUAL "RGB888")
     message(FATAL_ERROR "SDL_PLAYER_PIXEL_FORMAT must be RGB565 or RGB888")
+endif()
+
+if(SDL_PLAYER_BUILD_TESTS)
+    enable_testing()
+endif()
+
+# Keep the UI core as an independent repository. A sibling checkout is used by
+# the stm32_in_c superproject; standalone clones fetch the same pinned commit.
+set(TREELIKE_UI_BUILD_TESTS ${SDL_PLAYER_BUILD_TESTS} CACHE BOOL
+    "Build treelike_ui tests" FORCE)
+set(TREELIKE_UI_PIXEL_FORMAT "${SDL_PLAYER_PIXEL_FORMAT}" CACHE STRING
+    "Framebuffer format inherited from sdl-player" FORCE)
+
+set(_SDL_PLAYER_TREELIKE_UI_SOURCE "")
+if(SDL_PLAYER_TREELIKE_UI_SOURCE_DIR)
+    get_filename_component(_SDL_PLAYER_TREELIKE_UI_SOURCE
+        "${SDL_PLAYER_TREELIKE_UI_SOURCE_DIR}" ABSOLUTE
+        BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+else()
+    get_filename_component(_SDL_PLAYER_TREELIKE_UI_SIBLING
+        "${CMAKE_CURRENT_SOURCE_DIR}/../treelike-ui" ABSOLUTE)
+    if(EXISTS "${_SDL_PLAYER_TREELIKE_UI_SIBLING}/CMakeLists.txt")
+        set(_SDL_PLAYER_TREELIKE_UI_SOURCE
+            "${_SDL_PLAYER_TREELIKE_UI_SIBLING}")
+    endif()
+endif()
+
+if(TARGET treelike_ui::treelike_ui)
+    set(_SDL_PLAYER_TREELIKE_UI_MODE "existing target")
+elseif(_SDL_PLAYER_TREELIKE_UI_SOURCE)
+    if(NOT EXISTS "${_SDL_PLAYER_TREELIKE_UI_SOURCE}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "SDL_PLAYER_TREELIKE_UI_SOURCE_DIR does not contain CMakeLists.txt: "
+            "${_SDL_PLAYER_TREELIKE_UI_SOURCE}")
+    endif()
+    add_subdirectory("${_SDL_PLAYER_TREELIKE_UI_SOURCE}"
+                     "${CMAKE_CURRENT_BINARY_DIR}/treelike-ui")
+    set(_SDL_PLAYER_TREELIKE_UI_MODE
+        "local: ${_SDL_PLAYER_TREELIKE_UI_SOURCE}")
+else()
+    include(FetchContent)
+    FetchContent_Declare(
+        treelike_ui
+        GIT_REPOSITORY https://github.com/yunqinglt/treelike_ui.git
+        GIT_TAG ${SDL_PLAYER_TREELIKE_UI_GIT_TAG}
+    )
+    FetchContent_MakeAvailable(treelike_ui)
+    set(_SDL_PLAYER_TREELIKE_UI_MODE
+        "fetched: ${SDL_PLAYER_TREELIKE_UI_GIT_TAG}")
+endif()
+
+if(NOT TARGET treelike_ui::treelike_ui)
+    message(FATAL_ERROR "treelike_ui::treelike_ui target was not created")
 endif()
 
 # Prefer an installed SDL2 package (Linux distribution, vcpkg, MSYS2, etc.).
@@ -69,25 +127,12 @@ function(sdl_player_enable_warnings target)
     endif()
 endfunction()
 
-add_library(ui_core
-    ui/ui_surface.c
-    ui/ui_drawer.c
-)
-target_include_directories(ui_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_features(ui_core PUBLIC c_std_11)
-sdl_player_enable_warnings(ui_core)
-
-if(SDL_PLAYER_PIXEL_FORMAT STREQUAL "RGB888")
-    target_compile_definitions(ui_core PUBLIC PIXEL_FORMAT_RGB888)
-else()
-    target_compile_definitions(ui_core PUBLIC PIXEL_FORMAT_RGB565)
-endif()
-
 add_library(demo_core
     app/demo.c
     esp32_effects.c
 )
-target_link_libraries(demo_core PUBLIC ui_core)
+target_include_directories(demo_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(demo_core PUBLIC treelike_ui::treelike_ui)
 if(NOT MSVC)
     target_link_libraries(demo_core PUBLIC m)
 endif()
@@ -95,7 +140,9 @@ target_compile_features(demo_core PUBLIC c_std_11)
 sdl_player_enable_warnings(demo_core)
 
 add_library(sdl_platform platform/sdl/sdl_display.c)
-target_link_libraries(sdl_platform PUBLIC ui_core PRIVATE ${SDL_PLAYER_SDL_TARGET})
+target_include_directories(sdl_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(sdl_platform PUBLIC treelike_ui::treelike_ui
+                                   PRIVATE ${SDL_PLAYER_SDL_TARGET})
 target_compile_features(sdl_platform PUBLIC c_std_11)
 sdl_player_enable_warnings(sdl_platform)
 
@@ -116,13 +163,6 @@ if(WIN32 AND SDL_PLAYER_SDL_TARGET STREQUAL "SDL2::SDL2")
 endif()
 
 if(SDL_PLAYER_BUILD_TESTS)
-    enable_testing()
-    add_executable(ui-core-tests tests/ui_core_tests.c)
-    target_link_libraries(ui-core-tests PRIVATE ui_core)
-    target_compile_features(ui-core-tests PRIVATE c_std_11)
-    sdl_player_enable_warnings(ui-core-tests)
-    add_test(NAME ui-core-tests COMMAND ui-core-tests)
-
     add_test(NAME sdl-player-help COMMAND sdl-player --help)
     set_tests_properties(sdl-player-help PROPERTIES
         PASS_REGULAR_EXPRESSION "ui-tree-debug"
@@ -170,5 +210,6 @@ if(SDL_PLAYER_BUILD_TESTS)
 endif()
 
 message(STATUS "sdl-player ${PROJECT_VERSION}")
+message(STATUS "treelike_ui: ${_SDL_PLAYER_TREELIKE_UI_MODE}")
 message(STATUS "SDL2 target: ${SDL_PLAYER_SDL_TARGET}")
 message(STATUS "Pixel format: ${SDL_PLAYER_PIXEL_FORMAT}")

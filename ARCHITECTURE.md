@@ -1,18 +1,30 @@
 # sdl-player 架构说明与重构分析
 
+## 0. 2026-09-23 仓库拆分说明
+
+平台无关 UI 已拆为独立仓库 `yunqinglt/treelike_ui`。在
+`yunqinglt/stm32_in_c` 的标准布局中，本仓库位于 `tools/sdl-player`，UI 仓库位于
+兄弟目录 `tools/treelike-ui`；本仓库的 CMake 优先使用该本地 checkout，单独 clone 时
+则 FetchContent 固定的 UI 提交。本文后续的 `player_conf.h`、`ui/...` 和
+`tests/ui_core_tests.c` 均指 `treelike_ui` 仓库内路径，其余路径属于本仓库。
+
+拆分只改变仓库和构建边界，没有改写 C/C++ 源码。下文对 2026-08-28 重构的分析仍然
+有效；涉及旧主仓库提交 ID 的位置同时给出拆分后可复核的提交。
+
 ## 1. 分析范围与结论
 
-本文分析 2026-08-28 的提交 `f25d3c146e1a219ea500a48633a19d7a06a26847`
-（`Updated SDL player.`），并与它的直接父提交
+本文分析原主仓库 2026-08-28 的提交
+`f25d3c146e1a219ea500a48633a19d7a06a26847`；它在本仓库保留历史中对应
+`48d54e6`（`Updated SDL player.`），并与原提交的直接父提交
 `a088a24c3f9303c8df53b3484ac348eadc287824` 比较。该提交在
 `tools/sdl-player` 中涉及 34 个文件，约新增 1855 行、删除 2676 行。
 
 旧文件已经从工作树删除。本文标注“旧版”的行号时，内容可用下面的命令复核：
 
 ```sh
-git show f25d3c^:tools/sdl-player/main.c
-git show f25d3c^:tools/sdl-player/display.c
-git show f25d3c^:tools/sdl-player/drawer.c
+git show 48d54e6^:main.c
+git show 48d54e6^:display.c
+git show 48d54e6^:drawer.c
 ```
 
 这次提交不是简单地改名或搬文件，而是一次分层重构。新版可以概括为：
@@ -57,25 +69,25 @@ git show f25d3c^:tools/sdl-player/drawer.c
                                     |
                                     v
                              +-------------+
-                             |   ui_core   |
+                             | treelike_ui |
                              | UiSurface   |
                              | UiBuffer/UI |
                              +------+------+
                                     ^
                                     |
-                             ui-core-tests
+                         treelike-ui-tests
 
-              ui/experimental/*：不进入上述正式构建图
+          treelike_ui/ui/experimental/*：不进入上述正式构建图
 ```
 
-对应定义在 `CMakeLists.txt:72-125`：
+对应定义分布在两个仓库的 `CMakeLists.txt`：
 
-- `ui_core` 只编译 `ui/ui_surface.c` 和 `ui/ui_drawer.c`。
-- `demo_core` 编译 `app/demo.c` 和 `esp32_effects.c`，依赖 `ui_core`。
-- `sdl_platform` 编译 `platform/sdl/sdl_display.c`，依赖 `ui_core`，并把 SDL2
+- `treelike_ui::treelike_ui` 只编译 `ui/ui_surface.c` 和 `ui/ui_drawer.c`。
+- `demo_core` 编译 `app/demo.c` 和 `esp32_effects.c`，依赖 `treelike_ui`。
+- `sdl_platform` 编译 `platform/sdl/sdl_display.c`，依赖 `treelike_ui`，并把 SDL2
   保持为私有依赖。
 - `sdl-player` 可执行文件只编译 `main.c`，负责把应用与平台后端组合起来。
-- `ui-core-tests` 只链接 `ui_core`，测试二进制不链接 SDL。
+- `treelike-ui-tests` 由 UI 仓库定义，只链接 `treelike_ui`，测试二进制不链接 SDL。
 
 这是一种“分层 + 平台 Adapter”的设计。它还不是完整的 Ports and Adapters：
 `main.c` 仍直接调用 `SdlDisplay` API，并没有抽象的 `DisplayBackend` vtable。当前分层为
@@ -86,15 +98,15 @@ MCU 提供了“不引入 SDL 的源码复用边界”，但移植时仍需编�
 
 | 模块 | 主要职责 | 所有权/边界 |
 | --- | --- | --- |
-| `player_conf.h` | 屏幕默认尺寸、`pixel_t`、颜色、日志和 FPS 编译配置 | 不包含 SDL 类型；像素格式会影响所有模块的 ABI |
-| `ui/ui_types.h` | `UiRect` 及交集、并集、空矩形判断 | 统一 UI、裁剪和 dirty 的几何语义 |
-| `ui/ui_surface.*` | framebuffer、stride、像素内存所有权、blit、脏区 | 新架构最核心的跨平台数据契约 |
-| `ui/ui_drawer.*` | framebuffer 子视图树、dirty 传播、控件分组和基础 widget | 不创建离屏像素层，所有节点共享同一个 surface |
+| `treelike_ui: player_conf.h` | 屏幕默认尺寸、`pixel_t`、颜色、日志和 FPS 编译配置 | 不包含 SDL 类型；像素格式会影响所有模块的 ABI |
+| `treelike_ui: ui/ui_types.h` | `UiRect` 及交集、并集、空矩形判断 | 统一 UI、裁剪和 dirty 的几何语义 |
+| `treelike_ui: ui/ui_surface.*` | framebuffer、stride、像素内存所有权、blit、脏区 | 新架构最核心的跨平台数据契约 |
+| `treelike_ui: ui/ui_drawer.*` | framebuffer 子视图树、dirty 传播、控件分组和基础 widget | 不创建离屏像素层，所有节点共享同一个 surface |
 | `app/demo.*` | 9 个 phase 的状态与分派 | 借用一个 `UiSurface *`，不拥有 SDL 资源 |
 | `esp32_effects.*` | plasma/tunnel/moire/fire/bounce 纯软件像素效果 | 无 SDL 依赖，但仍使用进程级静态状态和内存 |
 | `platform/sdl/sdl_display.*` | SDL 初始化、窗口、renderer、texture、输入、时钟和 present | 唯一正式包含 `<SDL.h>` 的实现模块 |
 | `main.c` | 参数解析、事件循环、帧调度、FPS、错误退出 | PC composition root，不再实现具体画面 |
-| `ui/experimental/` | object/event/animation 与固定块池草案 | 明确不进入正式 target，不能视为现有运行时能力 |
+| `treelike_ui: ui/experimental/` | object/event/animation 与固定块池草案 | 明确不进入正式 target，不能视为现有运行时能力 |
 
 ## 3. 核心契约：UiSurface
 
@@ -493,16 +505,22 @@ SDL 或图形驱动内部是否使用线程不属于本项目保证。
 - RGB565：`pixel_t == uint16_t`；
 - RGB888：`pixel_t == uint32_t`。
 
-CMake 通过 `SDL_PLAYER_PIXEL_FORMAT` 校验取值，并把选中的宏作为 `ui_core` 的 `PUBLIC`
-compile definition，见 `CMakeLists.txt:8-14,80-84`。`pixel_t` 会改变结构体 ABI、stride
+CMake 通过 `SDL_PLAYER_PIXEL_FORMAT` 校验取值，再传给 UI 仓库的
+`TREELIKE_UI_PIXEL_FORMAT`；`treelike_ui` 把选中的宏作为 `PUBLIC` compile
+definition。`pixel_t` 会改变结构体 ABI、stride
 字节数和 texture 格式，因此必须传播给 demo、platform 和 executable；这里使用 PUBLIC
 是正确且重要的设计。
 
 SDL texture 常量不再出现在公共配置中，而由 `sdl_display.c:18-25` 私有映射。
 
-### 8.2 SDL 依赖发现
+### 8.2 UI 与 SDL 依赖发现
 
-新版依次尝试：
+UI 依赖按以下顺序解析：父工程已存在的 `treelike_ui::treelike_ui` target、
+`SDL_PLAYER_TREELIKE_UI_SOURCE_DIR` 显式路径、主仓库的 `../treelike-ui` 兄弟目录，
+最后是固定到完整 commit ID 的 GitHub FetchContent。这样主仓库使用两个被 gitlink
+分别锁定的本地子模块，独立 clone 也能复现同一 UI 版本。
+
+SDL2 依次尝试：
 
 1. SDL2 config package；
 2. CMake `FindSDL2` module；
@@ -519,7 +537,7 @@ DLL。见 `CMakeLists.txt:16-62,107-116`。
 
 ### 8.3 测试边界
 
-`tests/ui_core_tests.c` 当前覆盖：
+`treelike_ui` 仓库的 `tests/ui_core_tests.c` 当前覆盖：
 
 - 矩形交集和并集；
 - 负目标坐标 blit 的正确源偏移；
@@ -535,9 +553,9 @@ CTest 还定义了以下 CLI smoke：`--help` 暴露 `--ui-tree-debug`；SDL dum
 这些测试的 timeout 均为 10 秒；这里描述的是 CMake 测试契约，不代表本次已实际运行。
 
 这组测试能对“UI target 不应链接 SDL”提供回归保护，但不能单凭链接关系禁止只引用 SDL
-头类型却不调用符号的源码依赖。CMake 在声明任何 target 前仍会先查找/获取 SDL，所以
-“测试 target 不链接 SDL”也不等于“没有 SDL 时可以单独配置 core-only 工程”。当前还
-没有 effects、分配失败、任意 stride、输入、SDL 生命周期或 RGB565/RGB888 矩阵的完整
+头类型却不调用符号的源码依赖。拆分后的 UI 仓库可以在没有 SDL 时独立配置、构建和运行
+core tests。当前还没有 effects、分配失败、任意 stride、输入、SDL 生命周期或
+RGB565/RGB888 矩阵的完整
 覆盖；现有 10 帧 CLI smoke 也不能替代真实窗口、真实 Windows runner 和平台生命周期测试。
 
 ## 9. 旧代码存在的问题
@@ -660,8 +678,8 @@ CMake 配置，Linux 依赖路径也不成立。新版改为 package/FetchConten
 6. **动画以帧计数而非时间推进。** 掉帧会减慢动画，尚未使用 delta time 或 scheduler。
 7. **平台抽象还不是统一端口。** `main.c` 直接认识 `SdlDisplay`；若确实需要同一个入口
    动态切换 SDL、实体 LCD 或测试后端，可再定义 display/event/clock port。
-8. **测试隔离只做到链接层。** CMake 配置阶段仍强制解析 SDL，core-only 离线构建需要
-   独立选项/子工程；RGB888、effects、任意 stride 和平台层也缺少矩阵测试。
+8. **测试矩阵仍不完整。** UI 已可脱离 SDL 独立配置和测试，但 RGB888、effects、任意
+   stride 和平台层仍缺少持续集成矩阵。
 9. **`ui/experimental` 只是方向声明。** object event、animation、block pool 虽已能阅读，
    但没有生命周期、调度和失败策略，不应被业务代码依赖。
 10. **建树失败不是事务式的。** `ui_build_render_tree()` 分配失败时可能已经向 root 挂入
@@ -678,8 +696,8 @@ CMake 配置，Linux 依赖路径也不成立。新版改为 package/FetchConten
    部分裁剪控件如何保留局部内容原点。
 3. 把 phase 3 改成持久树，让位置/样式改变触发真正的局部重画，再根据测量结果选择
    dirty rect list 或 tile bitset。
-4. 让 CMake 可以在不发现 SDL 的情况下只配置/测试 `ui_core`，并在 CI 中建立
-   RGB565/RGB888、Linux/Windows 矩阵。
+4. 在 `treelike_ui` 与 `sdl_player` 两仓的 CI 中建立 RGB565/RGB888、Linux/Windows
+   矩阵，并验证播放器固定的 UI 提交仍兼容。
 5. 需要交互式 UI 后，再正式化平台无关事件和 animation scheduler；不要直接把
    `ui/experimental` 的草案当成稳定 ABI。
 
@@ -695,3 +713,14 @@ CMake 配置，Linux 依赖路径也不成立。新版改为 package/FetchConten
 - 本机没有 Visual Studio 2022 generator，`cmake --preset windows-vs2022` 在生成器检测
   阶段停止，因此本次没有宣称 Windows SDL executable 或 CTest 已实际运行。该结果是
   审阅环境限制，不是已证明的源码构建失败。
+
+## 13. 2026-09-23 拆仓验证
+
+- `treelike_ui` 使用 Visual Studio 2026 / MSVC 19.51 分别以 RGB565、RGB888 独立配置、
+  构建并运行 `treelike-ui-tests`，两组均为 1/1 通过。
+- `sdl_player` 在没有兄弟目录的独立 checkout 中，通过 FetchContent 获取固定的
+  `treelike_ui` commit，并使用本机 SDL2 package 完成 Debug 构建；CTest 6/6 通过，
+  包括 UI core test、`--help` 与四个 SDL dummy-driver 冒烟测试。
+- 这次验证没有改写 C/C++ 源码，也没有进行真实窗口交互或嵌入式硬件测试。MSVC 仍报告
+  `esp32_effects.*` 的既有代码页/窄化转换警告；本地 SDL2 package 还报告其最低 CMake
+  版本声明的弃用警告，均不是本次拆仓引入的构建失败。

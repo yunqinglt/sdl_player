@@ -1,8 +1,25 @@
 # sdl-player
 
 该工具是在 Windows/Linux PC 上模拟嵌入式 framebuffer 的 SDL2 虚拟屏幕。
-UI 渲染层不依赖 SDL，因此同一套像素、脏区和控件绘制代码可以交给 MCU
-屏幕驱动使用。
+平台无关的 UI 渲染层已经拆为独立仓库
+[`yunqinglt/treelike_ui`](https://github.com/yunqinglt/treelike_ui)，同一套像素、
+脏区和控件绘制代码可以交给 MCU 屏幕驱动使用。
+
+## 获取源码
+
+单独使用播放器时：
+
+```sh
+git clone git@github.com:yunqinglt/sdl_player.git
+cd sdl_player
+```
+
+在 `yunqinglt/stm32_in_c` 主仓库中使用时，播放器和 UI 是两个同级子模块：
+
+```sh
+git submodule update --init --recursive
+cd tools/sdl-player
+```
 
 ## 构建与运行
 
@@ -10,7 +27,6 @@ Linux 推荐先安装系统 SDL2：
 
 ```sh
 sudo apt install cmake ninja-build libsdl2-dev
-cd tools/sdl-player
 cmake --preset linux-debug
 cmake --build --preset linux-debug
 ctest --preset linux-debug
@@ -20,12 +36,16 @@ ctest --preset linux-debug
 Windows 可选 Visual Studio 2019 或 2022：
 
 ```powershell
-Set-Location tools/sdl-player
 cmake --preset windows-vs2022
 cmake --build --preset windows-vs2022-debug
 ctest --preset windows-vs2022-debug
 .\out\build\windows-vs2022\Debug\sdl-player.exe
 ```
+
+在主仓库布局中，CMake 会优先使用兄弟目录 `../treelike-ui`。单独 clone
+`sdl_player` 时，CMake 从 GitHub 获取并固定到已验证的 `treelike_ui` 提交；也可通过
+`SDL_PLAYER_TREELIKE_UI_SOURCE_DIR` 显式指定本地 checkout。像素格式由播放器配置并以
+PUBLIC compile definition 传播，保证两边的 `pixel_t` ABI 一致。
 
 CMake 会优先使用系统、vcpkg 或 MSYS2 提供的 `SDL2::SDL2`。找不到时，
 默认通过 FetchContent 下载 SDL 2.30.11 并参与构建；离线环境可设置
@@ -82,20 +102,22 @@ dummy video driver 不显示窗口，适合通过 `UI-TREE` 输出验证自动�
 ```text
 main.c (PC 入口与帧循环)
   ├─ app/demo.c + esp32_effects.c     无平台的示例状态与画面生成
-  │    └─ ui/
-  │         ├─ ui_surface.*           framebuffer、裁剪、脏矩形
-  │         └─ ui_drawer.*            控件 buffer 树与基础 widget 绘制
+  │    └─ ../treelike-ui/             独立仓库与 CMake target
+  │         └─ ui/
+  │              ├─ ui_surface.*      framebuffer、裁剪、脏矩形
+  │              └─ ui_drawer.*       控件 buffer 树与基础 widget 绘制
   └─ platform/sdl/sdl_display.*       Windows/Linux 窗口、事件、时钟、texture
-       ├─ ui_surface.h                只读取 framebuffer/脏区接口
+       ├─ treelike_ui                 只读取 framebuffer/脏区接口
        └─ SDL2                        唯一允许包含 SDL.h 的模块
 ```
 
-构建也使用三个独立 target：`ui_core`、`demo_core`、`sdl_platform`。因此
-`ui_core` 的单元测试不链接 SDL，能直接检查平台隔离是否被破坏。旧的
+构建使用 `treelike_ui::treelike_ui`、`demo_core`、`sdl_platform` 三个独立
+library target。UI 单元测试归属 `treelike_ui` 仓库且不链接 SDL；播放器仓库保留
+命令行和 SDL 无头测试。旧的
 `Display` 同时拥有 framebuffer 和 SDL 对象、`drawer` 又读取 Display 内部字段的
 双向耦合已经移除。
 
-`ui/experimental/` 保留了原先残缺草稿里的 object tree、event、animation 和
+`../treelike-ui/ui/experimental/` 保留了原先残缺草稿里的 object tree、event、animation 和
 固定块池方向，但不加入正式构建；正式化之前仍需统一生命周期和调度模型。
 
 ## 已发现的后续工作
@@ -106,7 +128,7 @@ main.c (PC 入口与帧循环)
 2. UI 示例每帧重建临时 buffer 树。实际 UI 应采用 retained tree，只在布局或层级
    改变时重建，并把控件自身的 dirty 状态跨帧保存。
 3. 高层 `UiObject` 的事件捕获/冒泡、焦点、z-order、裁剪栈和动画 scheduler 尚未
-   定型；这也是 `ui/experimental` 暂不进入公共 API 的原因。
+   定型；这也是 `treelike_ui` 的 `ui/experimental` 暂不进入公共 API 的原因。
 4. ESP32 effects 仍使用进程级静态内存，缺少初始化失败返回值与 shutdown；若它们
    要成为库 API，应改为显式 context 生命周期。
 5. CI 还应覆盖 Windows MSVC 构建及 RGB565/RGB888 矩阵，并由真实 Windows runner
