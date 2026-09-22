@@ -1,0 +1,116 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "linux-debug",
+      "displayName": "Linux Debug (Ninja)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SDL_PLAYER_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "windows-vs2019",
+      "displayName": "Windows Visual Studio 2019 x64",
+      "generator": "Visual Studio 16 2019",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "SDL_PLAYER_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "windows-vs2026",
+      "displayName": "Windows Visual Studio 2026 x64",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "SDL_PLAYER_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "windows-vs2022",
+      "displayName": "Windows Visual Studio 2022 x64",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "SDL_PLAYER_BUILD_TESTS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug"
+    },
+    {
+      "name": "windows-vs2019-debug",
+      "configurePreset": "windows-vs2019",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-vs2026-debug",
+      "configurePreset": "windows-vs2026",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-vs2022-debug",
+      "configurePreset": "windows-vs2022",
+      "configuration": "Debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-vs2019-debug",
+      "configurePreset": "windows-vs2019",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-vs2022-debug",
+      "configurePreset": "windows-vs2022",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
