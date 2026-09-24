@@ -3,9 +3,16 @@
 #include "esp32_effects.h"
 #include "player_conf.h"
 #include "ui/ui_drawer.h"
+#if defined(TREELIKE_UI_HAS_OBJECT_RAW)
+#include "ui/ui_object_raw.h"
+#endif
+#if defined(TREELIKE_UI_HAS_FONT_RENDER)
+#include "ui/buffer_font_render.h"
+#endif
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #define DEMO_UI_GROUPING_THRESHOLD 40
 
@@ -17,6 +24,112 @@ typedef struct {
     int dx;
     int dy;
 } MovingBox;
+
+#if defined(TREELIKE_UI_HAS_FONT_RENDER)
+#ifndef SDL_PLAYER_BITMAP_FONT_PATH
+#define SDL_PLAYER_BITMAP_FONT_PATH NULL
+#endif
+#ifndef SDL_PLAYER_VECTOR_FONT_PATH
+#define SDL_PLAYER_VECTOR_FONT_PATH NULL
+#endif
+
+typedef struct {
+    bool initialized;
+    bool bitmap_loaded;
+    bool vector_loaded;
+    font_type_t bitmap_file;
+    UiFontStorage bitmap_storage;
+    const font_type_t *bitmap_font;
+    font_type_t vector_file;
+    UiFontStorage vector_storage;
+    const font_type_t *vector_font;
+} DemoFontAssets;
+
+static DemoFontAssets demo_font_assets;
+
+static void demo_font_assets_shutdown(void)
+{
+    if (demo_font_assets.bitmap_loaded) {
+        buffer_font_unload(&demo_font_assets.bitmap_file,
+                           &demo_font_assets.bitmap_storage);
+        demo_font_assets.bitmap_loaded = false;
+    }
+    if (demo_font_assets.vector_loaded) {
+        buffer_font_unload(&demo_font_assets.vector_file,
+                           &demo_font_assets.vector_storage);
+        demo_font_assets.vector_loaded = false;
+    }
+}
+
+static void demo_font_assets_init(void)
+{
+    UiFontStatus status;
+    bool vector_loaded = false;
+
+    if (demo_font_assets.initialized) return;
+    demo_font_assets.initialized = true;
+    demo_font_assets.bitmap_font = &ui_font_bitmap_5x7;
+    demo_font_assets.vector_font = &ui_font_vector_stroke;
+
+    demo_font_assets.bitmap_file = (font_type_t){
+        .name = "sdl-demo-bitmap-5x7",
+        .id = 1u,
+        .path = SDL_PLAYER_BITMAP_FONT_PATH
+    };
+    if (demo_font_assets.bitmap_file.path != NULL) {
+        status = buffer_font_load(&demo_font_assets.bitmap_file,
+                                  &demo_font_assets.bitmap_storage);
+        if (status == UI_FONT_STATUS_OK) {
+            demo_font_assets.bitmap_font = &demo_font_assets.bitmap_file;
+            demo_font_assets.bitmap_loaded = true;
+        } else {
+            LOG_WARN("Cannot load demo bitmap font (status=%d); "
+                     "using the built-in font.\n", (int)status);
+        }
+    }
+
+#if defined(TREELIKE_UI_HAS_TRUETYPE) && TREELIKE_UI_HAS_TRUETYPE && \
+    defined(SDL_PLAYER_TRUETYPE_FONT_PATH)
+    demo_font_assets.vector_file = (font_type_t){
+        .name = "Fantasque Sans Mono",
+        .id = 2u,
+        .path = SDL_PLAYER_TRUETYPE_FONT_PATH
+    };
+    status = buffer_font_load(&demo_font_assets.vector_file,
+                              &demo_font_assets.vector_storage);
+    if (status == UI_FONT_STATUS_OK) {
+        demo_font_assets.vector_font = &demo_font_assets.vector_file;
+        demo_font_assets.vector_loaded = true;
+        vector_loaded = true;
+        LOG_INFO("UI-FONT source=truetype family=Fantasque Sans Mono\n");
+    } else {
+        LOG_WARN("Cannot load demo TrueType outline font (status=%d); "
+                 "trying the TLFNT1 stroke font.\n", (int)status);
+    }
+#endif
+
+    if (!vector_loaded) {
+        demo_font_assets.vector_file = (font_type_t){
+            .name = "sdl-demo-vector-stroke",
+            .id = 3u,
+            .path = SDL_PLAYER_VECTOR_FONT_PATH
+        };
+        if (demo_font_assets.vector_file.path != NULL) {
+            status = buffer_font_load(&demo_font_assets.vector_file,
+                                      &demo_font_assets.vector_storage);
+            if (status == UI_FONT_STATUS_OK) {
+                demo_font_assets.vector_font = &demo_font_assets.vector_file;
+                demo_font_assets.vector_loaded = true;
+                vector_loaded = true;
+            } else {
+                LOG_WARN("Cannot load demo TLFNT1 stroke font (status=%d); "
+                         "using the built-in stroke font.\n", (int)status);
+            }
+        }
+    }
+    (void)atexit(demo_font_assets_shutdown);
+}
+#endif
 
 static void move_box(MovingBox *box, int width, int height)
 {
@@ -229,20 +342,80 @@ static bool render_ui_tree(Demo *demo)
         {410, 280, 180, 90, -3, 5},
         {650, 430, 120, 120, 2, -7}
     };
+#if defined(TREELIKE_UI_HAS_FONT_RENDER)
+    text_renderer_t bitmap_renderer;
+    text_renderer_t vector_renderer;
+    UiTextRenderContext text_contexts[] = {
+        {
+            .renderer = &bitmap_renderer,
+            .text = "BITMAP",
+            .origin_x = 14,
+            .origin_y = 24,
+            .pixel_height = 35,
+            .stroke_width = 1,
+            .letter_spacing = 3,
+            .line_spacing = 2,
+            .color = COLOR_WHITE,
+            .background_color = COLOR_BLACK,
+            .opaque = false
+        },
+        {
+            .renderer = &vector_renderer,
+            .text = "VECTOR",
+            .origin_x = 4,
+            .origin_y = 24,
+            .pixel_height = 31,
+            .stroke_width = 3,
+            .letter_spacing = 1,
+            .line_spacing = 2,
+            .color = COLOR_YELLOW,
+            .background_color = COLOR_BLACK,
+            .opaque = false
+        },
+        {
+            .renderer = &bitmap_renderer,
+            .text = "TREE",
+            .origin_x = 10,
+            .origin_y = 16,
+            .pixel_height = 28,
+            .stroke_width = 1,
+            .letter_spacing = 2,
+            .line_spacing = 2,
+            .color = COLOR_CYAN,
+            .background_color = COLOR_BLACK,
+            .opaque = false
+        }
+    };
+#else
     static const UiRoundedRectStyle styles[] = {
         {24, COLOR_WHITE, PIXEL_RGB(24, 110, 180), true},
         {16, COLOR_YELLOW, PIXEL_RGB(100, 35, 125), true},
         {30, COLOR_CYAN, PIXEL_RGB(10, 70, 35), true}
     };
+#endif
     UiControl controls[sizeof(boxes) / sizeof(boxes[0])];
 
+#if defined(TREELIKE_UI_HAS_FONT_RENDER)
+    demo_font_assets_init();
+    if (!buffer_font_renderer_init(&bitmap_renderer,
+                                   demo_font_assets.bitmap_font) ||
+        !buffer_font_renderer_init(&vector_renderer,
+                                   demo_font_assets.vector_font)) {
+        return false;
+    }
+#endif
     ui_surface_fill(surface, PIXEL_RGB(8, 12, 18));
     for (size_t i = 0; i < sizeof(boxes) / sizeof(boxes[0]); ++i) {
         move_box(&boxes[i], surface->width, surface->height);
         controls[i].bounds = (UiRect){boxes[i].x, boxes[i].y,
                                       boxes[i].width, boxes[i].height};
+#if defined(TREELIKE_UI_HAS_FONT_RENDER)
+        controls[i].draw = buffer_font_draw;
+        controls[i].context = &text_contexts[i];
+#else
         controls[i].draw = ui_draw_rounded_rect;
         controls[i].context = (void *)&styles[i];
+#endif
     }
 
     root = ui_buffer_root(surface);

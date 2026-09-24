@@ -82,7 +82,9 @@ git show 48d54e6^:drawer.c
 
 对应定义分布在两个仓库的 `CMakeLists.txt`：
 
-- `treelike_ui::treelike_ui` 只编译 `ui/ui_surface.c` 和 `ui/ui_drawer.c`。
+- `treelike_ui::treelike_ui` 编译 `ui/ui_surface.c`、`ui/ui_drawer.c`、
+  `ui/ui_object_raw.c` 和 `ui/buffer_font_render.c`；启用 Win32/GDI outline backend 时
+  另加入 `ui/buffer_font_win32.c`。
 - `demo_core` 编译 `app/demo.c` 和 `esp32_effects.c`，依赖 `treelike_ui`。
 - `sdl_platform` 编译 `platform/sdl/sdl_display.c`，依赖 `treelike_ui`，并把 SDL2
   保持为私有依赖。
@@ -92,7 +94,8 @@ git show 48d54e6^:drawer.c
 这是一种“分层 + 平台 Adapter”的设计。它还不是完整的 Ports and Adapters：
 `main.c` 仍直接调用 `SdlDisplay` API，并没有抽象的 `DisplayBackend` vtable。当前分层为
 MCU 提供了“不引入 SDL 的源码复用边界”，但移植时仍需编写平台后端和组合入口；若目标
-不允许动态分配，还要替换 `ui_drawer` 的 `malloc/calloc` 策略，effects 也有额外限制。
+不允许动态分配，还要替换 `ui_drawer`/`ui_object_raw` 的 `malloc/calloc` 策略，effects
+也有额外限制。
 
 ### 2.2 模块职责
 
@@ -101,7 +104,9 @@ MCU 提供了“不引入 SDL 的源码复用边界”，但移植时仍需编�
 | `treelike_ui: player_conf.h` | 屏幕默认尺寸、`pixel_t`、颜色、日志和 FPS 编译配置 | 不包含 SDL 类型；像素格式会影响所有模块的 ABI |
 | `treelike_ui: ui/ui_types.h` | `UiRect` 及交集、并集、空矩形判断 | 统一 UI、裁剪和 dirty 的几何语义 |
 | `treelike_ui: ui/ui_surface.*` | framebuffer、stride、像素内存所有权、blit、脏区 | 新架构最核心的跨平台数据契约 |
-| `treelike_ui: ui/ui_drawer.*` | framebuffer 子视图树、dirty 传播、控件分组和基础 widget | 不创建离屏像素层，所有节点共享同一个 surface |
+| `treelike_ui: ui/ui_drawer.*` | framebuffer 子视图树、dirty 传播和渲染调度 | 不创建离屏像素层，所有节点共享同一个 surface |
+| `treelike_ui: ui/ui_object_raw.*` | 直接写 `UiBuffer` 的回调、临近分组和调试控件 | 使用调用方拥有的 context；不是 retained `UiObject` 基类 |
+| `treelike_ui: ui/buffer_font_render.*` | 点阵、stroke/vector 及可选 TrueType outline 的加载、测量、光栅化与 draw callback | 只写 `UiBuffer`；不是 `UiObject` 派生类；TTF 与 ASCII `TLFNT1` 使用不同 parser |
 | `app/demo.*` | 9 个 phase 的状态与分派 | 借用一个 `UiSurface *`，不拥有 SDL 资源 |
 | `esp32_effects.*` | plasma/tunnel/moire/fire/bounce 纯软件像素效果 | 无 SDL 依赖，但仍使用进程级静态状态和内存 |
 | `platform/sdl/sdl_display.*` | SDL 初始化、窗口、renderer、texture、输入、时钟和 present | 唯一正式包含 `<SDL.h>` 的实现模块 |
@@ -246,7 +251,8 @@ typedef struct {
 4. 单控件组直接挂到根；多控件组先创建一个容器，再以组内相对坐标创建叶节点。
 5. 为所有叶节点安装 draw/context 并标脏。
 
-见 `ui_drawer.c:122-222`。当前算法时间复杂度约为 `O(n²)`，适合演示中的三个控件，
+见 `ui_object_raw.c` 的 `ui_build_render_tree_debug()`。当前算法时间复杂度约为 `O(n²)`，
+适合演示中的三个控件，
 并不适合直接扩展到很大的动态 UI。分组容器也不拥有独立像素缓存；它只是空间和 dirty
 遍历层次，不会自动改善 surface 只有一个 dirty 包围矩形的问题。
 
@@ -288,8 +294,8 @@ typedef struct {
 typedef void (*UiDrawCallback)(UiBuffer *buffer, void *context);
 ```
 
-核心已经提供调试边框、调试分组、圆角矩形、图片拷贝和 RGB565/RGB888 像素混合，见
-`ui_drawer.c:224-349`。新增 widget 时不需要修改树遍历器，只需要：
+raw 层已经提供调试边框、调试分组、圆角矩形、图片拷贝和 RGB565/RGB888 像素混合，
+实现集中在 `ui_object_raw.c`。新增低层 widget 时不需要修改树遍历器，只需要：
 
 1. 定义稳定生命周期的 context。
 2. 在 `buffer->width/height` 范围内绘制。
@@ -298,6 +304,52 @@ typedef void (*UiDrawCallback)(UiBuffer *buffer, void *context);
 目前树构建器会裁剪越界 `UiControl.bounds`，但不会把“左/上被裁掉多少”传给回调。
 对图片或带局部坐标内容的控件，这会把内容原点移动到裁后左上角，而不是真正保留源偏移。
 因此 `UiSurface` 的 blit 裁剪已经正确，控件级裁剪语义仍需补充 clip/source-offset 信息。
+
+### 4.6 字体渲染服务不是对象层级
+
+`buffer_font_render` 沿用同一个 `UiDrawCallback` 接缝，但它是无 SDL 的渲染服务，不是
+`UiObject` 或 Label 的派生类。内置字体分成两种：
+
+- 5×7、1-bpp ROM 点阵字体，适合小尺寸和资源受限目标；
+- 字形源由几何线段组成、按每个目标字号重新变换和光栅化的 scalable stroke/vector
+  font。它不是 TrueType outline 引擎，不负责解析 TTF/OTF 文件。
+
+Windows 构建启用 Win32/GDI backend 并导出 `TREELIKE_UI_HAS_TRUETYPE` 时，还会增加
+独立的真实 TrueType outline path backend。它与第二项的线段字形并存，选择或回退引擎
+时不能把 TTF 文件交给 `TLFNT1` parser，也不能把 stroke font 宣称为 TrueType。
+
+`font_type_t` 描述字体，`text_renderer_t` 是初始化后的只读绑定；调用方拥有
+`UiTextRenderContext`，其中保存文本、局部原点、目标像素高度、笔画宽度、间距、颜色和
+透明/不透明背景策略。`buffer_font_draw()` 适配 callback 的 `void` 返回约束，把状态和
+测量结果回写到 context。直接绑定方式如下：
+
+```c
+text_renderer_t renderer;
+UiTextRenderContext text = {
+    .renderer = &renderer,
+    .text = "VECTOR",
+    .pixel_height = 31,
+    .stroke_width = 3,
+    .color = COLOR_YELLOW,
+    .opaque = false
+};
+
+buffer_font_renderer_init(&renderer, &ui_font_vector_stroke);
+UiControl control = {
+    .bounds = {410, 280, 180, 90},
+    .draw = buffer_font_draw,
+    .context = &text
+};
+```
+
+除内置字体外，`buffer_font_load()` 可以把 `font_type_t.path` 指向的 ASCII `TLFNT1`
+文件解析进调用方提供的 `UiFontStorage`；启用 TrueType feature 时，同一入口也可识别
+真实 TTF 并交给 outline backend。font、storage 和 path 必须比 renderer 活得更久，
+`buffer_font_unload()` 负责显式失效和清零。`TLFNT1` 分支用十六进制行位图或
+“线段表 + glyph mask”表达字形，和 TTF parser 保持严格边界。
+`font_type_t.addr` 为 SPI Flash 端口保留，本阶段 addr-only 来源返回
+`UI_FONT_STATUS_UNSUPPORTED_SOURCE`，不会把整数地址当成本机指针解引用。当前文本路径支持
+换行与未知字符 fallback，但不承担 shaping、双向排版或完整 Unicode 字库。
 
 ## 5. 应用层：Demo 状态机与 effects
 
@@ -317,7 +369,7 @@ typedef void (*UiDrawCallback)(UiBuffer *buffer, void *context);
 | 0 | checkerboard | 直接逐像素生成棋盘 | 整屏 |
 | 1 | gradient | 直接逐像素生成渐变 | 整屏 |
 | 2 | partial update | 擦除旧矩形，再绘制新矩形 | 切入后的首帧整屏；后续为两个矩形的包围框 |
-| 3 | platform-free UI tree | 构造三个移动控件的临时 UiBuffer 树 | 当前演示先清背景，所以仍是整屏 |
+| 3 | platform-free UI tree | 构造三个移动文字控件的临时 UiBuffer 树 | 当前演示先清背景，所以仍是整屏 |
 | 4 | plasma | effects 直接写 surface 像素 | 整屏 |
 | 5 | tunnel | effects 直接写 surface 像素 | 整屏 |
 | 6 | moire | effects 直接写 surface 像素 | 整屏 |
@@ -333,7 +385,10 @@ phase 3 每帧执行以下流程：
 ```text
 整屏填背景
   -> 更新三个 MovingBox
-  -> 在栈上构造 UiControl[]
+  -> 首次进入时从 build tree 加载位图字体和可选 TTF
+  -> TTF 失败时回退 TLFNT1 stroke，再失败回退内置 stroke
+  -> 在栈上构造 UiControl[] 和字体 renderer/context
+  -> 把 buffer_font_draw 直接绑定到三个 UiControl.draw
   -> 分配根节点
   -> 并查集分组并分配临时节点
   -> 可选：把结构 snapshot 交给拓扑观察器
@@ -342,7 +397,23 @@ phase 3 每帧执行以下流程：
   -> 释放整棵临时树
 ```
 
-见 `app/demo.c:133-168`。因此它展示的是“只通过 `UiSurface` 完成 UI 绘制”的调用路径
+支持字体 API 的 UI target 下，三个透明背景控件分别显示白色点阵 `BITMAP`、黄色
+31 px `VECTOR` 和青色点阵 `TREE`。`VECTOR` 在 TrueType feature 与 Fantasque path
+同时存在时使用真实 outline，否则使用可缩放 stroke fallback。它们继续使用原来的
+bounds、速度和 40 px 阈值，所以 tick 1 snapshot、tick 8 join、tick 10 split 的拓扑
+轨迹不变；改变的只是叶节点的 draw/context，不是分组算法或对象继承关系。
+
+两份 `TLFNT1` demo 字体在 configure 时通过 `configure_file(COPYONLY)` 进入 build
+tree；父工程提供 `SDL_PLAYER_TRUETYPE_FONT_PATH` 时，Fantasque TTF 也复制到同一资源
+目录。编译给 demo 的是对应绝对 build 路径，因此运行时 cwd 无关。路径字体及其
+caller-owned storage 以进程期静态对象保存，只在首次使用时解析；打开或校验失败按上述
+顺序回退，进程正常退出时通过 `buffer_font_unload()` 释放平台字体资源。
+
+为使 `sdl_player` 独立 checkout 仍可链接其固定的旧 UI 提交 `72e3060`，上述路径由
+`TREELIKE_UI_HAS_FONT_RENDER` 选择；旧 target 不导出该 feature macro 时保留圆角控件
+回退。这里不使用 `__has_include`，能力声明来自链接 target 的 PUBLIC usage requirement。
+
+因此 phase 3 展示的是“只通过 `UiSurface` 完成 UI 绘制”的调用路径
 和临时树的绘制结果；源码依赖隔离的更强证据来自独立 CMake target 和 core test。
 它还不是 retained UI。因为每帧先 `ui_surface_fill()`，本 phase 也没有实际获得局部
 dirty 上传收益。
@@ -547,10 +618,16 @@ DLL。见 `CMakeLists.txt:16-62,107-116`。
 - gap 恰好等于阈值时不分组，以及并查集的传递成组；
 - post-render 红色 group overlay，包括完整边框、叶控件内容保留、显式 container 标记，
   以及单控件或普通多子节点容器不被误画框。
+- 5×7 golden mask、2× 点阵缩放、UTF-8 fallback/换行、任意 stride 与四边裁剪；
+- stroke/vector 在多个非固定字号下的 coverage、锚点和 measure/render 一致性；
+- `TLFNT1` path load/unload、addr-only 拒绝；启用 Win32 backend 时还覆盖 Fantasque
+  outline 的 metrics、抗锯齿像素、大小写、裁剪和资源生命周期。
 
 CTest 还定义了以下 CLI smoke：`--help` 暴露 `--ui-tree-debug`；SDL dummy driver 下
 首帧出现 `snapshot`、10 帧内出现 `join` 和 `split`；默认关闭调试时不出现 `UI-TREE`。
-这些测试的 timeout 均为 10 秒；这里描述的是 CMake 测试契约，不代表本次已实际运行。
+当 target 导出 `TREELIKE_UI_HAS_TRUETYPE=1` 且 CMake 提供 TTF 路径时，还要求输出
+`UI-FONT source=truetype family=Fantasque Sans Mono`，从应用层证明没有静默 fallback。
+这些测试的 timeout 均为 10 秒；dummy driver 的无头结果仍不能替代真实窗口交互检查。
 
 这组测试能对“UI target 不应链接 SDL”提供回归保护，但不能单凭链接关系禁止只引用 SDL
 头类型却不调用符号的源码依赖。拆分后的 UI 仓库可以在没有 SDL 时独立配置、构建和运行
@@ -724,3 +801,17 @@ CMake 配置，Linux 依赖路径也不成立。新版改为 package/FetchConten
 - 这次验证没有改写 C/C++ 源码，也没有进行真实窗口交互或嵌入式硬件测试。MSVC 仍报告
   `esp32_effects.*` 的既有代码页/窄化转换警告；本地 SDL2 package 还报告其最低 CMake
   版本声明的弃用警告，均不是本次拆仓引入的构建失败。
+
+## 14. 2026-09-24 字体 demo 验证
+
+- Visual Studio 2026 / MSVC 19.51 下，当前 UI、Win32/GDI TrueType backend 和
+  Fantasque Regular 分别以 RGB565、RGB888 构建；两套 CTest 均为 7/7，通过专用
+  `sdl-player-truetype-font` 证明 demo 实际选择 TTF，而不是静默回退。
+- RGB565 的 SDL dummy 预览从项目外 cwd 运行 10 帧，依次输出 tick 1 snapshot、tick 8
+  join、tick 10 split，并在首次绘制时输出稳定的 `UI-FONT source=truetype` 日志；说明
+  build-tree 绝对资源路径和原有控件轨迹同时有效。
+- 固定旧 UI 提交 `72e3060` 由隔离的本地 checkout 提供给 standalone `sdl_player`，构建
+  和原有 6/6 CTest 通过，证明没有字体 feature macro 时圆角兼容分支仍可用。GitHub
+  FetchContent 的首次在线拉取因连接重置失败，因此这里不把网络下载本身标为已验证。
+- 仍未进行真实窗口视觉检查。构建只出现 `esp32_effects.*` 的既有代码页/窄化警告和 SDL
+  CMake 兼容性弃用警告；字体 demo 源码没有新增 MSVC 警告。

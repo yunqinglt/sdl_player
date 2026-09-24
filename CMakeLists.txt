@@ -10,6 +10,8 @@ set(SDL_PLAYER_TREELIKE_UI_SOURCE_DIR "" CACHE PATH
 set(SDL_PLAYER_TREELIKE_UI_GIT_TAG
     "72e3060d292922e98ed4a3a9d023786801a9d38f" CACHE STRING
     "treelike_ui commit used by FetchContent")
+set(SDL_PLAYER_TRUETYPE_FONT_PATH "" CACHE FILEPATH
+    "Optional TrueType font copied into the build tree for the UI demo")
 set(SDL_PLAYER_PIXEL_FORMAT "RGB565" CACHE STRING "Framebuffer format: RGB565 or RGB888")
 set_property(CACHE SDL_PLAYER_PIXEL_FORMAT PROPERTY STRINGS RGB565 RGB888)
 
@@ -127,12 +129,56 @@ function(sdl_player_enable_warnings target)
     endif()
 endfunction()
 
+set(_SDL_PLAYER_FONT_ASSET_DIR "${CMAKE_CURRENT_BINARY_DIR}/assets")
+file(MAKE_DIRECTORY "${_SDL_PLAYER_FONT_ASSET_DIR}")
+set(_SDL_PLAYER_BITMAP_FONT_PATH
+    "${_SDL_PLAYER_FONT_ASSET_DIR}/demo_bitmap_5x7.tlf")
+set(_SDL_PLAYER_VECTOR_FONT_PATH
+    "${_SDL_PLAYER_FONT_ASSET_DIR}/demo_vector_stroke.tlf")
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/demo_bitmap_5x7.tlf"
+    "${_SDL_PLAYER_BITMAP_FONT_PATH}"
+    COPYONLY
+)
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/demo_vector_stroke.tlf"
+    "${_SDL_PLAYER_VECTOR_FONT_PATH}"
+    COPYONLY
+)
+set(_SDL_PLAYER_TRUETYPE_FONT_BUILD_PATH "")
+if(SDL_PLAYER_TRUETYPE_FONT_PATH)
+    get_filename_component(_SDL_PLAYER_TRUETYPE_FONT_SOURCE
+        "${SDL_PLAYER_TRUETYPE_FONT_PATH}" ABSOLUTE
+        BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(NOT EXISTS "${_SDL_PLAYER_TRUETYPE_FONT_SOURCE}")
+        message(FATAL_ERROR
+            "SDL_PLAYER_TRUETYPE_FONT_PATH does not exist: "
+            "${_SDL_PLAYER_TRUETYPE_FONT_SOURCE}")
+    endif()
+    set(_SDL_PLAYER_TRUETYPE_FONT_BUILD_PATH
+        "${_SDL_PLAYER_FONT_ASSET_DIR}/demo_truetype.ttf")
+    configure_file(
+        "${_SDL_PLAYER_TRUETYPE_FONT_SOURCE}"
+        "${_SDL_PLAYER_TRUETYPE_FONT_BUILD_PATH}"
+        COPYONLY
+    )
+endif()
+
 add_library(demo_core
     app/demo.c
     esp32_effects.c
 )
 target_include_directories(demo_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(demo_core PUBLIC treelike_ui::treelike_ui)
+target_compile_definitions(demo_core PRIVATE
+    SDL_PLAYER_BITMAP_FONT_PATH="${_SDL_PLAYER_BITMAP_FONT_PATH}"
+    SDL_PLAYER_VECTOR_FONT_PATH="${_SDL_PLAYER_VECTOR_FONT_PATH}"
+)
+if(_SDL_PLAYER_TRUETYPE_FONT_BUILD_PATH)
+    target_compile_definitions(demo_core PRIVATE
+        SDL_PLAYER_TRUETYPE_FONT_PATH="${_SDL_PLAYER_TRUETYPE_FONT_BUILD_PATH}"
+    )
+endif()
 if(NOT MSVC)
     target_link_libraries(demo_core PUBLIC m)
 endif()
@@ -163,6 +209,14 @@ if(WIN32 AND SDL_PLAYER_SDL_TARGET STREQUAL "SDL2::SDL2")
 endif()
 
 if(SDL_PLAYER_BUILD_TESTS)
+    get_target_property(_SDL_PLAYER_UI_COMPILE_DEFINITIONS
+        treelike_ui::treelike_ui INTERFACE_COMPILE_DEFINITIONS)
+    set(_SDL_PLAYER_HAS_TRUETYPE FALSE)
+    if("TREELIKE_UI_HAS_TRUETYPE=1" IN_LIST
+       _SDL_PLAYER_UI_COMPILE_DEFINITIONS)
+        set(_SDL_PLAYER_HAS_TRUETYPE TRUE)
+    endif()
+
     add_test(NAME sdl-player-help COMMAND sdl-player --help)
     set_tests_properties(sdl-player-help PROPERTIES
         PASS_REGULAR_EXPRESSION "ui-tree-debug"
@@ -183,6 +237,18 @@ if(SDL_PLAYER_BUILD_TESTS)
     set_tests_properties(sdl-player-ui-tree-snapshot PROPERTIES
         PASS_REGULAR_EXPRESSION "UI-TREE.*event=snapshot"
     )
+
+    if(_SDL_PLAYER_HAS_TRUETYPE AND
+       _SDL_PLAYER_TRUETYPE_FONT_BUILD_PATH)
+        sdl_player_add_headless_test(
+            sdl-player-truetype-font
+            --phase 3 --frames 1
+        )
+        set_tests_properties(sdl-player-truetype-font PROPERTIES
+            PASS_REGULAR_EXPRESSION
+                "UI-FONT source=truetype family=Fantasque Sans Mono"
+        )
+    endif()
 
     sdl_player_add_headless_test(
         sdl-player-ui-tree-join

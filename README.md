@@ -67,6 +67,33 @@ SDL_VIDEODRIVER=dummy ./out/build/linux-debug/sdl-player \
 `--ui-tree-debug` 专门观察 phase 3 的临近分组。参数可以和任意 phase 一起解析，
 但只有 phase 3 会产生下面的调试行为：
 
+链接支持字体渲染的 `treelike_ui` 时，三个移动控件分别直接把
+`buffer_font_draw` 绑定到 `UiControl.draw`，显示白色点阵 `BITMAP`、黄色 31 px `VECTOR`
+和青色点阵 `TREE`。若 UI target 导出 `TREELIKE_UI_HAS_TRUETYPE` 且 CMake 提供 Fantasque
+TTF 路径，Windows demo 的 `VECTOR` 优先使用真实 GDI TrueType outline；否则依次回退
+ASCII `TLFNT1` scalable stroke/vector 字体和内置 stroke 字体。TTF 与 `TLFNT1` 是两种
+独立格式，不会混用 parser。文字背景透明，不再先绘制圆角填充；字体渲染器是普通绘制服务，不是
+`UiObject` 派生类。运动矩形、速度和临近阈值均未改变，因此第 1 tick 的 snapshot、
+第 8 tick 的 join 和第 10 tick 的 split 契约保持不变。
+
+两份 ASCII `TLFNT1` demo 字体由 CMake 复制到 build tree；可选 Fantasque TTF 也采用
+相同方式复制。播放器通过绝对 build 路径首次加载，因此运行目录不会影响资源定位。位图
+资源失败时回退内置点阵；TTF 失败时先回退 TLFNT1 stroke，再回退内置 stroke，不会让
+phase 3 失效。standalone 构建的 `SDL_PLAYER_TRUETYPE_FONT_PATH` 默认为空。
+Fantasque 是父工作树提供的本地输入，不复制进 `sdl_player` 源码或安装包；只有显式路径
+存在时，configure 才把它复制到被忽略的 build tree。
+Fantasque 成功绑定时会输出一次稳定日志：
+
+```text
+[INFO] UI-FONT source=truetype family=Fantasque Sans Mono
+```
+
+同时会注册对应的 SDL dummy-driver CTest，防止 demo 静默退回 stroke 字体。
+
+播放器的独立仓库仍可配合固定的旧 UI 提交 `72e3060` 构建。该提交没有
+`TREELIKE_UI_HAS_FONT_RENDER`，编译时会选用原圆角控件作为兼容回退；使用当前 UI target
+时则自动启用上述文字预览。
+
 - 两个或更多控件形成临近组时，在普通控件全部画完后，以 overlay 方式补画该组的
   完整红色外框；单独控件没有组外框。
 - 组边界是各成员经过根 surface 裁剪后的紧包围矩形，不是向外扩张 40 像素的
@@ -105,7 +132,9 @@ main.c (PC 入口与帧循环)
   │    └─ ../treelike-ui/             独立仓库与 CMake target
   │         └─ ui/
   │              ├─ ui_surface.*      framebuffer、裁剪、脏矩形
-  │              └─ ui_drawer.*       控件 buffer 树与基础 widget 绘制
+  │              ├─ ui_drawer.*       UiBuffer 树、dirty 与渲染调度
+  │              ├─ buffer_font_render.* 点阵与可缩放笔画字体服务
+  │              └─ ui_object_raw.*   低级回调、临近分组与调试控件
   └─ platform/sdl/sdl_display.*       Windows/Linux 窗口、事件、时钟、texture
        ├─ treelike_ui                 只读取 framebuffer/脏区接口
        └─ SDL2                        唯一允许包含 SDL.h 的模块
@@ -116,6 +145,13 @@ library target。UI 单元测试归属 `treelike_ui` 仓库且不链接 SDL；�
 命令行和 SDL 无头测试。旧的
 `Display` 同时拥有 framebuffer 和 SDL 对象、`drawer` 又读取 Display 内部字段的
 双向耦合已经移除。
+
+`buffer_font_render` 同时提供 1-bpp 点阵引擎和按字号重新光栅化几何线段的 scalable
+stroke/vector 引擎，并可由 feature macro 启用独立的真实 TrueType outline backend；
+当前 backend 是可选的 Win32/GDI 路径。这些渲染路径都不进入 `UiObject` 继承体系。
+Demo 只借用 renderer/context，并通过现有 `UiDrawCallback` 契约把结果写入 `UiBuffer`。
+平台路径会先按来源选择 TTF 或 `TLFNT1`
+parser；SPI Flash `addr` 字段只保留接口位置，本阶段不读取该地址。
 
 `../treelike-ui/ui/experimental/` 保留了原先残缺草稿里的 object tree、event、animation 和
 固定块池方向，但不加入正式构建；正式化之前仍需统一生命周期和调度模型。
